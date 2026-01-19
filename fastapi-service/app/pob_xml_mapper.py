@@ -24,6 +24,7 @@ from app.character_models import (
     ItemRarity,
     SocketColor
 )
+from app.gem_service import get_gem_service
 
 logger = logging.getLogger(__name__)
 
@@ -342,31 +343,24 @@ class PobXmlMapper:
 
         Args:
             gem_name: 寶石名稱
-            gem_id: PoB 內部識別碼（優先使用）
+            gem_id: PoB 內部識別碼（備用）
 
         Returns:
             是否為輔助寶石
         """
-        # 優先使用 gemId 判斷（最可靠的方法）
+        # 優先使用 RePoE 資料判斷（最可靠）
+        gem_service = get_gem_service()
+        if gem_service.is_support_gem(gem_name):
+            return True
+
+        # 備用：使用 gemId 判斷
         if gem_id and "SupportGem" in gem_id:
             return True
 
-        # 如果沒有 gemId，使用關鍵字比對（向後兼容）
+        # 最後備用：關鍵字比對（向後兼容）
         support_keywords = [
             "Support", "support",
             "Awakened", "awakened",
-            "Damage on Full Life",
-            "Elemental Damage with Attacks",
-            "Added Cold", "Added Fire", "Added Lightning",
-            "Increased Critical", "Increased Duration",
-            "Hypothermia", "Inspiration",
-            "Vicious Projectiles", "Multistrike",
-            "Melee Physical", "Fortify",
-            "Concentrated Effect", "Increased Area",
-            "Trinity", "Brutality",
-            "Faster Attacks", "Faster Casting",
-            "Spell Echo", "Greater Multiple Projectiles",
-            "Lesser Multiple Projectiles"
         ]
         return any(keyword in gem_name for keyword in support_keywords)
     
