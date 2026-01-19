@@ -205,6 +205,11 @@
                         </div>
                     </div>
 
+                    <!-- 按裝備部位的寶石比較 -->
+                    <div v-if="comparisonResult.gem_differences_by_slot?.length" class="mt-8">
+                        <SlotGemComparison :slots="comparisonResult.gem_differences_by_slot" />
+                    </div>
+
                     <!-- 重要提示 -->
                     <div class="mt-6 bg-blue-900/20 border border-blue-700 rounded-lg p-4">
                         <h4 class="text-lg font-bold text-blue-300 mb-2">📌 下一步行動</h4>
@@ -227,6 +232,7 @@ import { useBuildStore } from '@/stores/buildStore'
 import EquipmentGrid from '@/components/EquipmentGrid.vue'
 import SkillSetup from '@/components/SkillSetup.vue'
 import CharacterStatsCard from '@/components/CharacterStatsCard.vue'
+import SlotGemComparison from '@/components/SlotGemComparison.vue'
 
 // ===== Pinia Store =====
 const buildStore = useBuildStore()

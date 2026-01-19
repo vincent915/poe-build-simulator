@@ -12,7 +12,11 @@ import logging
 
 from app.character_models import StandardizedCharacter
 from app.pob_xml_mapper import PobXmlMapper
-from app.priority_comparison_engine import PriorityComparisonEngine, ComparisonDifference
+from app.priority_comparison_engine import (
+    PriorityComparisonEngine,
+    ComparisonDifference,
+    SlotGemDifference
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,7 @@ class ComparisonResponse(BaseModel):
     player_character: Dict[str, Any]
     target_character: Dict[str, Any]
     differences: List[Dict[str, Any]]
+    gem_differences_by_slot: List[Dict[str, Any]]  # 按裝備部位分組的寶石差異
     summary: Dict[str, Any]
 
 
@@ -115,21 +120,22 @@ def standardize_character_from_pob(
 def compare_characters_with_priority(
     player_character: StandardizedCharacter,
     target_character: StandardizedCharacter
-) -> List[ComparisonDifference]:
+) -> tuple[List[ComparisonDifference], List[SlotGemDifference]]:
     """
     執行優先級比對
-    
+
     Args:
         player_character: 玩家角色
         target_character: 目標角色
-        
+
     Returns:
-        差異列表
+        (差異列表, 按裝備部位分組的寶石差異)
     """
     engine = PriorityComparisonEngine()
     differences = engine.compare_characters(player_character, target_character)
-    
-    return differences
+    gem_differences_by_slot = engine.get_gem_differences_by_slot()
+
+    return differences, gem_differences_by_slot
 
 
 def generate_comparison_summary(
@@ -211,10 +217,10 @@ async def compare_characters_endpoint(
 ) -> ComparisonResponse:
     """
     角色比對端點（整合優先級引擎）
-    
+
     Args:
         request: 比對請求
-        
+
     Returns:
         比對結果
     """
@@ -225,29 +231,35 @@ async def compare_characters_endpoint(
             request.player_pob_code,
             request.lazy_load
         )
-        
+
         logger.info("解析目標角色")
         target_character = standardize_character_from_pob(
             request.target_pob_code,
             request.lazy_load
         )
-        
+
         # 執行優先級比對
         logger.info("執行優先級比對分析")
-        differences = compare_characters_with_priority(
+        differences, gem_differences_by_slot = compare_characters_with_priority(
             player_character,
             target_character
         )
-        
+
         # 生成摘要
         summary = generate_comparison_summary(differences)
-        
+
+        # 統計有差異的裝備部位數量
+        slots_with_diff = len([s for s in gem_differences_by_slot if s.get('has_differences')])
+        logger.info(f"按裝備部位比較完成，{len(gem_differences_by_slot)} 個部位，"
+                   f"{slots_with_diff} 個部位有差異")
+
         return ComparisonResponse(
             status="success",
             message=f"比對完成，發現 {len(differences)} 項差異",
             player_character=player_character.dict(),
             target_character=target_character.dict(),
             differences=[dict(d) for d in differences],
+            gem_differences_by_slot=[dict(s) for s in gem_differences_by_slot],
             summary=summary
         )
         

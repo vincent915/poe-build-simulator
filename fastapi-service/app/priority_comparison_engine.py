@@ -30,13 +30,16 @@ class DifferenceCategory(str, Enum):
     GEM_LEVEL = "gem_level"
     GEM_QUALITY = "gem_quality"
     GEM_MISSING = "gem_missing"
+    GEM_EXTRA = "gem_extra"  # 玩家有但目標沒有的寶石
     EQUIPMENT_CORE = "equipment_core"
     EQUIPMENT_MODS = "equipment_mods"
+    SLOT_SKILL_MISMATCH = "slot_skill_mismatch"  # 裝備部位技能不匹配
+    SLOT_LINK_COUNT = "slot_link_count"  # 裝備部位連結數差異
 
 
 class ComparisonDifference(dict):
     """比對差異物件"""
-    
+
     def __init__(
         self,
         category: DifferenceCategory,
@@ -60,13 +63,43 @@ class ComparisonDifference(dict):
         )
 
 
+class SlotGemDifference(dict):
+    """裝備部位寶石差異"""
+
+    def __init__(
+        self,
+        slot: str,
+        slot_label: str,
+        player_main_skill: Optional[str],
+        target_main_skill: Optional[str],
+        player_link_count: int,
+        target_link_count: int,
+        gem_differences: List[ComparisonDifference],
+        player_gems: List[Dict],
+        target_gems: List[Dict]
+    ):
+        super().__init__(
+            slot=slot,
+            slot_label=slot_label,
+            player_main_skill=player_main_skill,
+            target_main_skill=target_main_skill,
+            player_link_count=player_link_count,
+            target_link_count=target_link_count,
+            gem_differences=gem_differences,
+            player_gems=player_gems,
+            target_gems=target_gems,
+            has_differences=len(gem_differences) > 0
+        )
+
+
 class PriorityComparisonEngine:
     """優先級比對引擎"""
-    
+
     def __init__(self):
         """初始化比對引擎"""
         self.differences: List[ComparisonDifference] = []
-    
+        self.gem_differences_by_slot: List[SlotGemDifference] = []
+
     def compare_characters(
         self,
         player_character: StandardizedCharacter,
@@ -74,39 +107,48 @@ class PriorityComparisonEngine:
     ) -> List[ComparisonDifference]:
         """
         執行完整角色比對
-        
+
         Args:
             player_character: 玩家角色
             target_character: 目標角色
-            
+
         Returns:
             差異列表（已按優先級排序）
         """
         self.differences = []
-        
+        self.gem_differences_by_slot = []
+
         logger.info("開始執行三層優先級比對分析")
-        
+
         # 第一優先級：影響可玩性
         self._check_level_gap(player_character, target_character)
         self._check_ascendancy_status(player_character, target_character)
         self._check_main_skill_links(player_character, target_character)
-        
+
         # 第二優先級：影響核心強度
         self._check_keystone_passives(player_character, target_character)
         self._check_main_gem_level_quality(player_character, target_character)
         self._check_core_equipment(player_character, target_character)
-        
+
         # 第三優先級：優化空間
         self._check_general_passives(player_character, target_character)
         self._check_support_gem_setup(player_character, target_character)
         self._check_equipment_mods(player_character, target_character)
-        
+
+        # 按裝備部位比較寶石差異
+        self._compare_gems_by_slot(player_character, target_character)
+
         # 按優先級排序
         self._sort_by_priority()
-        
-        logger.info(f"比對完成，發現 {len(self.differences)} 項差異")
-        
+
+        logger.info(f"比對完成，發現 {len(self.differences)} 項差異，"
+                   f"{len(self.gem_differences_by_slot)} 個裝備部位有寶石配置")
+
         return self.differences
+
+    def get_gem_differences_by_slot(self) -> List[SlotGemDifference]:
+        """取得按裝備部位分組的寶石差異"""
+        return self.gem_differences_by_slot
     
     # ===== 第一優先級：影響可玩性 =====
     
@@ -491,10 +533,264 @@ class PriorityComparisonEngine:
             ComparisonPriority.MEDIUM: 2,
             ComparisonPriority.LOW: 3
         }
-        
+
         self.differences.sort(
             key=lambda d: priority_order.get(
                 ComparisonPriority(d['priority']),
                 99
             )
         )
+
+    # ===== 按裝備部位比較寶石 =====
+
+    def _compare_gems_by_slot(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """按裝備部位比較所有技能組的寶石差異"""
+        # 建立玩家和目標的 slot -> skill_group 映射
+        player_slot_map: Dict[str, Any] = {}
+        target_slot_map: Dict[str, Any] = {}
+
+        for sg in player.skill_setup.skill_groups:
+            if sg.slot and sg.enabled:
+                player_slot_map[sg.slot] = sg
+
+        for sg in target.skill_setup.skill_groups:
+            if sg.slot and sg.enabled:
+                target_slot_map[sg.slot] = sg
+
+        # 合併所有 slot
+        all_slots = set(player_slot_map.keys()) | set(target_slot_map.keys())
+
+        for slot in sorted(all_slots):
+            player_sg = player_slot_map.get(slot)
+            target_sg = target_slot_map.get(slot)
+
+            slot_diff = self._compare_single_slot(slot, player_sg, target_sg)
+            if slot_diff:
+                self.gem_differences_by_slot.append(slot_diff)
+
+    def _compare_single_slot(
+        self,
+        slot: str,
+        player_sg: Optional[Any],
+        target_sg: Optional[Any]
+    ) -> Optional[SlotGemDifference]:
+        """比較單一裝備部位的寶石配置"""
+        gem_differences: List[ComparisonDifference] = []
+
+        # 取得寶石列表
+        player_gems = []
+        target_gems = []
+        player_main_skill = None
+        target_main_skill = None
+        player_link_count = 0
+        target_link_count = 0
+
+        if player_sg:
+            player_gems = [self._gem_to_dict(g) for g in player_sg.gems if g.enabled]
+            player_main_skill = player_sg.main_skill
+            player_link_count = player_sg.link_count
+
+        if target_sg:
+            target_gems = [self._gem_to_dict(g) for g in target_sg.gems if g.enabled]
+            target_main_skill = target_sg.main_skill
+            target_link_count = target_sg.link_count
+
+        # 如果兩邊都沒有寶石，跳過
+        if not player_gems and not target_gems:
+            return None
+
+        # 比較連結數
+        if player_link_count < target_link_count:
+            gem_differences.append(ComparisonDifference(
+                category=DifferenceCategory.SLOT_LINK_COUNT,
+                priority=ComparisonPriority.HIGH,
+                message=f"{slot} 連結數不足：{player_link_count}L → {target_link_count}L",
+                current_value=player_link_count,
+                target_value=target_link_count,
+                action=f"需要 {target_link_count} 連裝備",
+                pob_instruction=f"確保 {slot} 部位裝備有 {target_link_count} 個連結插槽",
+                slot=slot
+            ))
+
+        # 比較主技能
+        if target_main_skill and player_main_skill != target_main_skill:
+            gem_differences.append(ComparisonDifference(
+                category=DifferenceCategory.SLOT_SKILL_MISMATCH,
+                priority=ComparisonPriority.MEDIUM,
+                message=f"{slot} 主技能不同：{player_main_skill or '無'} → {target_main_skill}",
+                current_value=player_main_skill,
+                target_value=target_main_skill,
+                action=f"更換為 {target_main_skill}",
+                pob_instruction=f"在 PoB 中將 {slot} 的主技能更換為 {target_main_skill}",
+                slot=slot
+            ))
+
+        # 比較寶石等級和品質
+        if player_sg and target_sg:
+            self._compare_gem_levels_quality(
+                slot, player_sg, target_sg, gem_differences
+            )
+
+        # 比較缺少的寶石
+        self._compare_missing_gems(
+            slot, player_sg, target_sg, gem_differences
+        )
+
+        # 產生 slot 標籤（中文）
+        slot_label = self._get_slot_label(slot)
+
+        return SlotGemDifference(
+            slot=slot,
+            slot_label=slot_label,
+            player_main_skill=player_main_skill,
+            target_main_skill=target_main_skill,
+            player_link_count=player_link_count,
+            target_link_count=target_link_count,
+            gem_differences=gem_differences,
+            player_gems=player_gems,
+            target_gems=target_gems
+        )
+
+    def _compare_gem_levels_quality(
+        self,
+        slot: str,
+        player_sg: Any,
+        target_sg: Any,
+        gem_differences: List[ComparisonDifference]
+    ):
+        """比較寶石等級和品質"""
+        # 建立玩家寶石名稱映射
+        player_gem_map = {g.name: g for g in player_sg.gems if g.enabled}
+
+        for target_gem in target_sg.gems:
+            if not target_gem.enabled:
+                continue
+
+            player_gem = player_gem_map.get(target_gem.name)
+            if not player_gem:
+                continue  # 缺少的寶石在另一個方法處理
+
+            # 檢查等級
+            if player_gem.level < target_gem.level:
+                gem_differences.append(ComparisonDifference(
+                    category=DifferenceCategory.GEM_LEVEL,
+                    priority=ComparisonPriority.MEDIUM,
+                    message=f"{target_gem.name} 等級不足：Lv{player_gem.level} → Lv{target_gem.level}",
+                    current_value=player_gem.level,
+                    target_value=target_gem.level,
+                    action=f"升級至 Lv{target_gem.level}",
+                    pob_instruction=f"在 PoB 中將 {target_gem.name} 等級設定為 {target_gem.level}",
+                    slot=slot,
+                    gem_name=target_gem.name,
+                    is_support=target_gem.is_support
+                ))
+
+            # 檢查品質
+            if player_gem.quality < target_gem.quality:
+                gem_differences.append(ComparisonDifference(
+                    category=DifferenceCategory.GEM_QUALITY,
+                    priority=ComparisonPriority.LOW,
+                    message=f"{target_gem.name} 品質不足：{player_gem.quality}% → {target_gem.quality}%",
+                    current_value=player_gem.quality,
+                    target_value=target_gem.quality,
+                    action=f"提升品質至 {target_gem.quality}%",
+                    pob_instruction=f"在 PoB 中將 {target_gem.name} 品質設定為 {target_gem.quality}%",
+                    slot=slot,
+                    gem_name=target_gem.name,
+                    is_support=target_gem.is_support
+                ))
+
+    def _compare_missing_gems(
+        self,
+        slot: str,
+        player_sg: Optional[Any],
+        target_sg: Optional[Any],
+        gem_differences: List[ComparisonDifference]
+    ):
+        """比較缺少和多餘的寶石"""
+        player_gem_names = set()
+        target_gem_names = set()
+
+        if player_sg:
+            player_gem_names = {g.name for g in player_sg.gems if g.enabled}
+        if target_sg:
+            target_gem_names = {g.name for g in target_sg.gems if g.enabled}
+
+        # 缺少的寶石
+        missing_gems = target_gem_names - player_gem_names
+        for gem_name in missing_gems:
+            target_gem = next(
+                (g for g in target_sg.gems if g.name == gem_name),
+                None
+            ) if target_sg else None
+
+            gem_differences.append(ComparisonDifference(
+                category=DifferenceCategory.GEM_MISSING,
+                priority=ComparisonPriority.MEDIUM,
+                message=f"缺少寶石：{gem_name}",
+                current_value=None,
+                target_value=gem_name,
+                action=f"添加 {gem_name}",
+                pob_instruction=f"在 PoB 的 {slot} 技能組中新增 {gem_name}",
+                slot=slot,
+                gem_name=gem_name,
+                is_support=target_gem.is_support if target_gem else False,
+                target_level=target_gem.level if target_gem else None,
+                target_quality=target_gem.quality if target_gem else None
+            ))
+
+        # 多餘的寶石（玩家有但目標沒有）
+        extra_gems = player_gem_names - target_gem_names
+        for gem_name in extra_gems:
+            player_gem = next(
+                (g for g in player_sg.gems if g.name == gem_name),
+                None
+            ) if player_sg else None
+
+            gem_differences.append(ComparisonDifference(
+                category=DifferenceCategory.GEM_EXTRA,
+                priority=ComparisonPriority.LOW,
+                message=f"多餘寶石：{gem_name}",
+                current_value=gem_name,
+                target_value=None,
+                action=f"考慮移除 {gem_name}",
+                pob_instruction=f"目標配置中 {slot} 不包含 {gem_name}，可考慮移除或保留",
+                slot=slot,
+                gem_name=gem_name,
+                is_support=player_gem.is_support if player_gem else False
+            ))
+
+    def _gem_to_dict(self, gem: Any) -> Dict:
+        """將 GemInfo 轉換為字典"""
+        return {
+            "name": gem.name,
+            "level": gem.level,
+            "quality": gem.quality,
+            "is_support": gem.is_support,
+            "is_awakened": gem.is_awakened,
+            "is_vaal": gem.is_vaal,
+            "quality_type": gem.quality_type.value if hasattr(gem.quality_type, 'value') else gem.quality_type,
+            "enabled": gem.enabled
+        }
+
+    def _get_slot_label(self, slot: str) -> str:
+        """取得裝備部位的中文標籤"""
+        slot_labels = {
+            "Weapon 1": "主手武器",
+            "Weapon 2": "副手武器",
+            "Weapon 1 Swap": "武器替換 1",
+            "Weapon 2 Swap": "武器替換 2",
+            "Helmet": "頭盔",
+            "Body Armour": "胸甲",
+            "Gloves": "手套",
+            "Boots": "鞋子",
+            "Amulet": "項鍊",
+            "Ring 1": "戒指 1",
+            "Ring 2": "戒指 2",
+            "Belt": "腰帶",
+        }
+        return slot_labels.get(slot, slot)
