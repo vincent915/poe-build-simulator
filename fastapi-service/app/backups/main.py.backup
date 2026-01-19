@@ -1,0 +1,303 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+import base64
+import zlib
+import xml.etree.ElementTree as ET
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+from app.passive_tree_service import passive_tree_service
+from app.pob_config_extractor import (
+    extract_build_configuration,
+    compare_skill_configurations,
+    compare_passive_trees,
+    compare_equipment
+)
+
+app = FastAPI(title="POE Build Simulator API")
+
+# 允許跨域請求
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ===== 資料模型 =====
+class PlayerData(BaseModel):
+    account: str
+    character: str
+    level: int
+    character_class: str
+
+class TargetBuild(BaseModel):
+    source: str
+    data: str
+
+class SimulationRequest(BaseModel):
+    player_data: PlayerData
+    target_build: TargetBuild
+    stage: str
+    level: int
+
+class PobParseRequest(BaseModel):
+    pob_code: str
+
+class ComparisonRequest(BaseModel):
+    player_build: dict
+    target_build: dict
+    target_level: int
+    stage: str
+
+# ===== API 端點 =====
+
+@app.get("/")
+def read_root():
+    return {
+        "message": "FastAPI is running!",
+        "status": "online",
+        "version": "2.0.0 - Configuration Focus"
+    }
+
+@app.get("/api/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "service": "FastAPI POE Configuration Analyzer",
+        "message": "配置分析服務正常運作中"
+    }
+
+@app.post("/api/test/echo")
+async def test_echo(request: dict):
+    return {
+        "status": "success",
+        "message": "FastAPI 成功接收資料",
+        "received_data": request,
+        "data_type": type(request).__name__,
+        "timestamp": "2024-12-16"
+    }
+
+# main.py - 改良版 POB 解析端點
+
+@app.post("/api/pob/parse")
+async def parse_pob(request: PobParseRequest):
+    """解析 PoB 代碼（強化版錯誤處理）"""
+    try:
+        pob_code = request.pob_code.strip()
+        
+        # 步驟 1：驗證輸入
+        if not pob_code:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_type": "empty_input",
+                    "message": "PoB 代碼不可為空",
+                    "user_message": "請貼上有效的 PoB 代碼"
+                }
+            )
+        
+        # 步驟 2：Base64 解碼（支援多種格式）
+        try:
+            # 移除空白字元與換行
+            pob_code_clean = pob_code.replace(' ', '').replace('\n', '').replace('\r', '')
+            
+            # 補齊 padding
+            missing_padding = len(pob_code_clean) % 4
+            if missing_padding:
+                pob_code_clean += '=' * (4 - missing_padding)
+            
+            # 嘗試 URL-safe 解碼
+            try:
+                decoded = base64.urlsafe_b64decode(pob_code_clean)
+            except Exception:
+                # 回退到標準 Base64
+                decoded = base64.b64decode(pob_code_clean)
+                
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_type": "invalid_base64",
+                    "message": f"Base64 解碼失敗: {str(e)}",
+                    "user_message": "PoB 代碼格式錯誤，請確認是否完整複製"
+                }
+            )
+        
+        # 步驟 3：Zlib 解壓縮
+        try:
+            decompressed = zlib.decompress(decoded)
+        except zlib.error:
+            # 嘗試使用負值 window bits（處理無 header 的壓縮）
+            try:
+                decompressed = zlib.decompress(decoded, -zlib.MAX_WBITS)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error_type": "decompression_failed",
+                        "message": f"解壓縮失敗: {str(e)}",
+                        "user_message": "PoB 代碼可能已損壞"
+                    }
+                )
+        
+        # 步驟 4：XML 解析
+        try:
+            xml_string = decompressed.decode('utf-8')
+            root = ET.fromstring(xml_string)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_type": "xml_parse_failed",
+                    "message": f"XML 解析失敗: {str(e)}",
+                    "user_message": "PoB 檔案結構異常"
+                }
+            )
+        
+        # 步驟 5：提取配置資訊
+        build_config = extract_build_configuration(root)
+        
+        # 步驟 6：驗證必要欄位
+        if not build_config.get('character_info'):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error_type": "incomplete_data",
+                    "message": "缺少角色資訊",
+                    "user_message": "PoB 檔案缺少必要的角色資訊"
+                }
+            )
+        
+        return {
+            "status": "success",
+            "message": "PoB 配置解析成功",
+            "data": build_config
+        }
+        
+    except HTTPException:
+        # 重新拋出已處理的 HTTP 異常
+        raise
+    except Exception as e:
+        # 捕獲所有未預期的錯誤
+        logger.error(f"PoB 解析未預期錯誤: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "internal_error",
+                "message": str(e),
+                "user_message": "系統處理錯誤，請稍後再試"
+            }
+        )
+
+
+# ==================== 天賦樹 API ====================
+
+@app.on_event("startup")
+async def startup_event():
+    """應用啟動時預載天賦樹資料"""
+    logger.info("FastAPI 啟動中，預載天賦樹資料...")
+    passive_tree_service.load_tree_data()
+
+@app.get("/api/passive-tree/init")
+async def init_passive_tree():
+    """手動初始化天賦樹資料"""
+    success = passive_tree_service.load_tree_data()
+    return {
+        "success": success,
+        "node_count": len(passive_tree_service.node_map),
+        "loaded": passive_tree_service.is_loaded()
+    }
+
+@app.post("/api/passive-tree/nodes")
+async def get_passive_nodes_info(request: dict):
+    """取得多個節點的詳細資訊"""
+    node_ids = request.get('node_ids', [])
+    
+    if not isinstance(node_ids, list):
+        raise HTTPException(status_code=400, detail="node_ids must be an array")
+    
+    # 轉換為整數
+    try:
+        node_ids = [int(nid) for nid in node_ids]
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="All node_ids must be integers")
+    
+    nodes_info = passive_tree_service.get_nodes_info(node_ids)
+    
+    return {
+        "success": True,
+        "count": len(nodes_info),
+        "nodes": nodes_info
+    }
+
+@app.get("/api/passive-tree/node/{node_id}")
+async def get_passive_node_info(node_id: int):
+    """取得單一節點的詳細資訊"""
+    node_info = passive_tree_service.get_node_info(node_id)
+    
+    return {
+        "success": True,
+        "node": node_info
+    }
+
+@app.get("/api/passive-tree/status")
+async def get_passive_tree_status():
+    """檢查天賦樹資料載入狀態"""
+    return {
+        "loaded": passive_tree_service.is_loaded(),
+        "node_count": len(passive_tree_service.node_map)
+    }
+
+@app.post("/api/passive-tree/path")
+async def calculate_path(request: dict):
+    """計算從已點節點到目標節點的最短路徑"""
+    try:
+        start_nodes = request.get('start_nodes', [])
+        target_node = request.get('target_node')
+        
+        if not target_node:
+            return {"success": False, "message": "Missing target_node"}
+        
+        result = passive_tree_service.calculate_path(start_nodes, target_node)
+        return {
+            "success": result.get('found', False),
+            "path": result
+        }
+    except Exception as e:
+        logger.error(f"計算路徑失敗: {str(e)}")
+        return {
+            "success": False,
+            "message": str(e)
+        }
+
+@app.post("/api/passive-tree/suggest-paths")
+async def suggest_paths(request: dict):
+    """建議最佳天賦路徑"""
+    try:
+        allocated_nodes = request.get('allocated_nodes', [])
+        missing_nodes = request.get('missing_nodes', [])
+        max_suggestions = request.get('max_suggestions', 5)
+        
+        suggestions = passive_tree_service.suggest_optimal_paths(
+            allocated_nodes, 
+            missing_nodes, 
+            max_suggestions
+        )
+        
+        return {
+            "success": True,
+            "count": len(suggestions),
+            "suggestions": suggestions
+        }
+    except Exception as e:
+        logger.error(f"建議路徑失敗: {str(e)}")
+        return {
+            "success": False,
+            "message": str(e)
+        }

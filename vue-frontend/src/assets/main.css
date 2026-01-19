@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* POE 風格自訂樣式 */
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #1a1a1a;
+  color: #e0e0e0;
+}
+
+@layer components {
+  .poe-card {
+    @apply bg-gray-800 rounded-lg shadow-lg border border-gray-700;
+  }
+
+  .poe-button {
+    @apply bg-poe-gold hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded transition duration-200;
+  }
+
+  .poe-input {
+    @apply bg-gray-700 border border-gray-600 text-white rounded px-3 py-2 focus:outline-none focus:border-poe-gold;
+  }
+}
+
+/* 動畫效果 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.5s ease-in;
+}
+
+/* 自訂 scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #af6025;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #d97706;
+}

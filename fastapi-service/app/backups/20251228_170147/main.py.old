@@ -1,0 +1,500 @@
+"""
+角色比對優先級引擎
+實作三層優先級比對邏輯
+"""
+from typing import List, Dict, Any, Optional
+from enum import Enum
+import logging
+
+from character_models import StandardizedCharacter, AscendancyStatus
+
+logger = logging.getLogger(__name__)
+
+
+class ComparisonPriority(str, Enum):
+    """比對優先級"""
+    CRITICAL = "critical"  # 第一優先級：影響可玩性
+    HIGH = "high"  # 第二優先級：影響核心強度
+    MEDIUM = "medium"  # 第三優先級：優化空間
+    LOW = "low"  # 低優先級
+
+
+class DifferenceCategory(str, Enum):
+    """差異類別"""
+    LEVEL = "level"
+    ASCENDANCY = "ascendancy"
+    SKILL_LINKS = "skill_links"
+    PASSIVE_KEYSTONE = "passive_keystone"
+    PASSIVE_NOTABLE = "passive_notable"
+    PASSIVE_GENERAL = "passive_general"
+    GEM_LEVEL = "gem_level"
+    GEM_QUALITY = "gem_quality"
+    GEM_MISSING = "gem_missing"
+    EQUIPMENT_CORE = "equipment_core"
+    EQUIPMENT_MODS = "equipment_mods"
+
+
+class ComparisonDifference(dict):
+    """比對差異物件"""
+    
+    def __init__(
+        self,
+        category: DifferenceCategory,
+        priority: ComparisonPriority,
+        message: str,
+        current_value: Any,
+        target_value: Any,
+        action: str,
+        pob_instruction: str,
+        **kwargs
+    ):
+        super().__init__(
+            category=category.value,
+            priority=priority.value,
+            message=message,
+            current_value=current_value,
+            target_value=target_value,
+            action=action,
+            pob_instruction=pob_instruction,
+            **kwargs
+        )
+
+
+class PriorityComparisonEngine:
+    """優先級比對引擎"""
+    
+    def __init__(self):
+        """初始化比對引擎"""
+        self.differences: List[ComparisonDifference] = []
+    
+    def compare_characters(
+        self,
+        player_character: StandardizedCharacter,
+        target_character: StandardizedCharacter
+    ) -> List[ComparisonDifference]:
+        """
+        執行完整角色比對
+        
+        Args:
+            player_character: 玩家角色
+            target_character: 目標角色
+            
+        Returns:
+            差異列表（已按優先級排序）
+        """
+        self.differences = []
+        
+        logger.info("開始執行三層優先級比對分析")
+        
+        # 第一優先級：影響可玩性
+        self._check_level_gap(player_character, target_character)
+        self._check_ascendancy_status(player_character, target_character)
+        self._check_main_skill_links(player_character, target_character)
+        
+        # 第二優先級：影響核心強度
+        self._check_keystone_passives(player_character, target_character)
+        self._check_main_gem_level_quality(player_character, target_character)
+        self._check_core_equipment(player_character, target_character)
+        
+        # 第三優先級：優化空間
+        self._check_general_passives(player_character, target_character)
+        self._check_support_gem_setup(player_character, target_character)
+        self._check_equipment_mods(player_character, target_character)
+        
+        # 按優先級排序
+        self._sort_by_priority()
+        
+        logger.info(f"比對完成，發現 {len(self.differences)} 項差異")
+        
+        return self.differences
+    
+    # ===== 第一優先級：影響可玩性 =====
+    
+    def _check_level_gap(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查等級差距"""
+        player_level = player.character_core.level
+        target_level = target.character_core.level
+        
+        level_gap = target_level - player_level
+        
+        if level_gap > 0:
+            # 計算影響
+            missing_passive_points = level_gap
+            max_gem_level_diff = min(level_gap, 21 - player_level) if player_level < 21 else 0
+            
+            self.differences.append(ComparisonDifference(
+                category=DifferenceCategory.LEVEL,
+                priority=ComparisonPriority.CRITICAL,
+                message=f"角色等級不足：目前 Lv{player_level}，目標 Lv{target_level}",
+                current_value=player_level,
+                target_value=target_level,
+                action=f"需要提升 {level_gap} 級",
+                pob_instruction=(
+                    f"在 PoB 的 Build 設定中將等級調整為 {target_level} "
+                    "以預覽完整配置效果"
+                ),
+                impact={
+                    "missing_passive_points": missing_passive_points,
+                    "gem_level_cap_diff": max_gem_level_diff
+                }
+            ))
+    
+    def _check_ascendancy_status(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查昇華完成度"""
+        player_status = player.character_core.ascendancy_status
+        target_status = target.character_core.ascendancy_status
+        
+        player_points = player.character_core.ascendancy_points
+        target_points = target.character_core.ascendancy_points
+        
+        # 檢查昇華職業是否匹配
+        if player.character_core.ascendancy != target.character_core.ascendancy:
+            self.differences.append(ComparisonDifference(
+                category=DifferenceCategory.ASCENDANCY,
+                priority=ComparisonPriority.CRITICAL,
+                message=(
+                    f"昇華職業不同：目前 {player.character_core.ascendancy or '未昇華'}，"
+                    f"目標 {target.character_core.ascendancy}"
+                ),
+                current_value=player.character_core.ascendancy,
+                target_value=target.character_core.ascendancy,
+                action=f"需要昇華為 {target.character_core.ascendancy}",
+                pob_instruction=(
+                    "在 PoB 的 Build 設定中選擇正確的昇華職業"
+                )
+            ))
+            return
+        
+        # 檢查昇華點數
+        if player_points < target_points:
+            points_needed = target_points - player_points
+            trials_needed = (points_needed + 1) // 2  # 每次試煉提供 2 點
+            
+            self.differences.append(ComparisonDifference(
+                category=DifferenceCategory.ASCENDANCY,
+                priority=ComparisonPriority.CRITICAL,
+                message=(
+                    f"昇華點數不足：目前 {player_points}/8，"
+                    f"目標 {target_points}/8"
+                ),
+                current_value=player_points,
+                target_value=target_points,
+                action=f"需要完成 {trials_needed} 次昇華試煉",
+                pob_instruction=(
+                    "在 PoB 的天賦樹面板中配置昇華天賦節點"
+                ),
+                impact={
+                    "points_needed": points_needed,
+                    "trials_needed": trials_needed
+                }
+            ))
+    
+    def _check_main_skill_links(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查主技能連結數"""
+        player_links = player.skill_setup.main_link_count
+        target_links = target.skill_setup.main_link_count
+        
+        if player_links < target_links:
+            link_gap = target_links - player_links
+            
+            # 評估達成難度
+            difficulty = self._evaluate_link_difficulty(player_links, target_links)
+            
+            self.differences.append(ComparisonDifference(
+                category=DifferenceCategory.SKILL_LINKS,
+                priority=ComparisonPriority.CRITICAL,
+                message=(
+                    f"主技能連結數不足：目前 {player_links}L，"
+                    f"目標 {target_links}L"
+                ),
+                current_value=player_links,
+                target_value=target_links,
+                action=f"需要獲得 {target_links} 連裝備",
+                pob_instruction=(
+                    f"在 PoB 的裝備面板中確保主技能裝備有 {target_links} 個連結插槽"
+                ),
+                impact={
+                    "link_gap": link_gap,
+                    "difficulty": difficulty
+                }
+            ))
+    
+    def _evaluate_link_difficulty(self, current: int, target: int) -> str:
+        """評估達成連結數的難度"""
+        if target <= 4:
+            return "easy"
+        elif target == 5:
+            return "medium"
+        elif target == 6:
+            return "hard"
+        else:
+            return "very_hard"
+    
+    # ===== 第二優先級：影響核心強度 =====
+    
+    def _check_keystone_passives(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查基石天賦配置"""
+        player_keystones = set(player.passive_allocation.keystone_nodes)
+        target_keystones = set(target.passive_allocation.keystone_nodes)
+        
+        missing_keystones = target_keystones - player_keystones
+        
+        if missing_keystones:
+            # 這裡需要查詢天賦樹資料庫獲取節點名稱
+            # 暫時使用節點 ID
+            for keystone_id in missing_keystones:
+                self.differences.append(ComparisonDifference(
+                    category=DifferenceCategory.PASSIVE_KEYSTONE,
+                    priority=ComparisonPriority.HIGH,
+                    message=f"缺少基石天賦：節點 {keystone_id}",
+                    current_value=None,
+                    target_value=keystone_id,
+                    action="配置此基石天賦",
+                    pob_instruction=(
+                        "在 PoB 的天賦樹面板中找到並配置此基石天賦"
+                    )
+                ))
+    
+    def _check_main_gem_level_quality(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查主技能寶石等級與品質"""
+        player_main = player.skill_setup.main_skill_group
+        target_main = target.skill_setup.main_skill_group
+        
+        if not player_main or not target_main:
+            return
+        
+        # 找到主動技能寶石
+        player_active = next(
+            (g for g in player_main.gems if not g.is_support and g.enabled),
+            None
+        )
+        target_active = next(
+            (g for g in target_main.gems if not g.is_support and g.enabled),
+            None
+        )
+        
+        if not player_active or not target_active:
+            return
+        
+        # 檢查等級差距
+        if player_active.level < target_active.level:
+            level_gap = target_active.level - player_active.level
+            
+            self.differences.append(ComparisonDifference(
+                category=DifferenceCategory.GEM_LEVEL,
+                priority=ComparisonPriority.HIGH,
+                message=(
+                    f"主技能寶石等級不足：{player_active.name} "
+                    f"Lv{player_active.level} → Lv{target_active.level}"
+                ),
+                current_value=player_active.level,
+                target_value=target_active.level,
+                action=f"升級寶石 {level_gap} 級",
+                pob_instruction=(
+                    f"在 PoB 中選擇 {player_active.name}，將等級設定為 {target_active.level}"
+                ),
+                gem_name=player_active.name
+            ))
+        
+        # 檢查品質差距
+        if player_active.quality < target_active.quality:
+            quality_gap = target_active.quality - player_active.quality
+            
+            self.differences.append(ComparisonDifference(
+                category=DifferenceCategory.GEM_QUALITY,
+                priority=ComparisonPriority.HIGH,
+                message=(
+                    f"主技能寶石品質不足：{player_active.name} "
+                    f"{player_active.quality}% → {target_active.quality}%"
+                ),
+                current_value=player_active.quality,
+                target_value=target_active.quality,
+                action=f"提升品質 {quality_gap}%",
+                pob_instruction=(
+                    f"在 PoB 中選擇 {player_active.name}，調整品質至 {target_active.quality}%"
+                ),
+                gem_name=player_active.name
+            ))
+    
+    def _check_core_equipment(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查核心裝備部位"""
+        core_slots = ["weapon_main_hand", "body_armour"]
+        
+        for slot in core_slots:
+            player_item = player.equipment_snapshot.get_item_by_slot(slot)
+            target_item = target.equipment_snapshot.get_item_by_slot(slot)
+            
+            if not target_item:
+                continue
+            
+            if not player_item:
+                self.differences.append(ComparisonDifference(
+                    category=DifferenceCategory.EQUIPMENT_CORE,
+                    priority=ComparisonPriority.HIGH,
+                    message=f"{slot} 部位缺少裝備",
+                    current_value=None,
+                    target_value=target_item.name,
+                    action=f"裝備 {slot} 部位",
+                    pob_instruction=(
+                        f"在 PoB 的裝備面板中為 {slot} 位置添加裝備"
+                    ),
+                    slot=slot
+                ))
+                continue
+            
+            # 檢查基底類型
+            if player_item.base_type != target_item.base_type:
+                self.differences.append(ComparisonDifference(
+                    category=DifferenceCategory.EQUIPMENT_CORE,
+                    priority=ComparisonPriority.HIGH,
+                    message=(
+                        f"{slot} 基底不符：{player_item.base_type} → {target_item.base_type}"
+                    ),
+                    current_value=player_item.base_type,
+                    target_value=target_item.base_type,
+                    action=f"更換為 {target_item.base_type} 基底",
+                    pob_instruction=(
+                        f"在 PoB 中更換 {slot} 為正確的基底類型"
+                    ),
+                    slot=slot
+                ))
+            
+            # 檢查物品等級
+            if player_item.item_level < target_item.item_level:
+                self.differences.append(ComparisonDifference(
+                    category=DifferenceCategory.EQUIPMENT_CORE,
+                    priority=ComparisonPriority.HIGH,
+                    message=(
+                        f"{slot} 物品等級過低：iLv{player_item.item_level} → "
+                        f"iLv{target_item.item_level}"
+                    ),
+                    current_value=player_item.item_level,
+                    target_value=target_item.item_level,
+                    action=f"獲得更高物品等級的 {player_item.base_type}",
+                    pob_instruction=(
+                        f"在 PoB 中調整 {slot} 的物品等級（影響可詞綴詞綴層級）"
+                    ),
+                    slot=slot
+                ))
+    
+    # ===== 第三優先級：優化空間 =====
+    
+    def _check_general_passives(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查一般天賦節點效率"""
+        player_nodes = set(player.passive_allocation.allocated_nodes)
+        target_nodes = set(target.passive_allocation.allocated_nodes)
+        
+        missing_nodes = target_nodes - player_nodes
+        extra_nodes = player_nodes - target_nodes
+        
+        # 排除已在其他優先級處理的基石天賦
+        missing_general = missing_nodes - set(player.passive_allocation.keystone_nodes)
+        
+        if missing_general:
+            node_count = len(missing_general)
+            
+            self.differences.append(ComparisonDifference(
+                category=DifferenceCategory.PASSIVE_GENERAL,
+                priority=ComparisonPriority.MEDIUM,
+                message=f"天賦樹缺少 {node_count} 個節點",
+                current_value=len(player_nodes),
+                target_value=len(target_nodes),
+                action=f"配置 {node_count} 個天賦節點",
+                pob_instruction=(
+                    "在 PoB 的天賦樹面板中參考目標流派配置缺少的節點"
+                ),
+                missing_node_ids=list(missing_general)
+            ))
+    
+    def _check_support_gem_setup(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查輔助寶石組合"""
+        player_main = player.skill_setup.main_skill_group
+        target_main = target.skill_setup.main_skill_group
+        
+        if not player_main or not target_main:
+            return
+        
+        player_supports = set(player_main.support_gems)
+        target_supports = set(target_main.support_gems)
+        
+        missing_supports = target_supports - player_supports
+        
+        for support_name in missing_supports:
+            # 找到目標寶石的詳細資訊
+            target_gem = next(
+                (g for g in target_main.gems if g.name == support_name),
+                None
+            )
+            
+            if target_gem:
+                self.differences.append(ComparisonDifference(
+                    category=DifferenceCategory.GEM_MISSING,
+                    priority=ComparisonPriority.MEDIUM,
+                    message=f"缺少輔助寶石：{support_name}",
+                    current_value=None,
+                    target_value=support_name,
+                    action=f"添加 {support_name} Lv{target_gem.level}",
+                    pob_instruction=(
+                        f"在 PoB 的技能組中新增 {support_name} 輔助寶石"
+                    ),
+                    gem_name=support_name,
+                    is_awakened=target_gem.is_awakened
+                ))
+    
+    def _check_equipment_mods(
+        self,
+        player: StandardizedCharacter,
+        target: StandardizedCharacter
+    ):
+        """檢查裝備詞綴匹配度"""
+        # 這部分需要更複雜的詞綴比對邏輯
+        # 暫時省略，留待後續完善
+        pass
+    
+    def _sort_by_priority(self):
+        """按優先級排序差異列表"""
+        priority_order = {
+            ComparisonPriority.CRITICAL: 0,
+            ComparisonPriority.HIGH: 1,
+            ComparisonPriority.MEDIUM: 2,
+            ComparisonPriority.LOW: 3
+        }
+        
+        self.differences.sort(
+            key=lambda d: priority_order.get(
+                ComparisonPriority(d['priority']),
+                99
+            )
+        )

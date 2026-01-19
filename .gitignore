@@ -1,0 +1,47 @@
+# Claude Code temp files
+tmpclaude-*
+nul
+
+# Backup directories
+vue-frontend-backup/
+
+# Private documentation with sensitive info
+fastapi-service/POE_API修復指南.md
+CLAUDE.md
+docs/
+
+# Private project structure notes
+**/當前Vue專案結構符合職責劃分*.ini
+**/Vue前端專案目錄結構*.ini
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

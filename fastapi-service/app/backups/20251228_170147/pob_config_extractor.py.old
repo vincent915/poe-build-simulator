@@ -1,0 +1,553 @@
+"""
+PoB 配置提取器（精簡版）
+專注於提取 100% 準確的配置資訊
+不計算 DPS 或生命值，由用戶在 PoB 中驗證
+"""
+import xml.etree.ElementTree as ET
+from typing import Dict, Any, List
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def extract_build_configuration(root: ET.Element) -> Dict[str, Any]:
+    """
+    提取建構配置（不計算數值）
+    返回：角色資訊、技能配置、裝備配置、天賦樹
+    """
+    result = {
+        "character_info": extract_character_info(root),
+        "skill_configuration": extract_skill_configuration(root),
+        "equipment_configuration": extract_equipment_configuration(root),
+        "passive_tree": extract_passive_tree(root),
+        "config_options": extract_config_options(root)
+    }
+    
+    logger.info(f"✅ 配置提取完成: {result['character_info']['class']} Lv{result['character_info']['level']}")
+    
+    return result
+
+
+def extract_character_info(root: ET.Element) -> Dict[str, Any]:
+    """提取角色基本資訊"""
+    build_elem = root.find("Build")
+    
+    if not build_elem:
+        return {
+            "level": 1,
+            "class": "Unknown",
+            "ascendancy": None,
+            "league": "Standard"
+        }
+    
+    return {
+        "level": int(build_elem.get("level", 1)),
+        "class": build_elem.get("className", "Unknown"),
+        "ascendancy": build_elem.get("ascendClassName", None),
+        "league": build_elem.get("league", "Standard"),
+        "main_socket_group": int(build_elem.get("mainSocketGroup", 1))
+    }
+
+
+def extract_skill_configuration(root: ET.Element) -> List[Dict[str, Any]]:
+    """
+    提取技能配置（完整且準確）
+    包括：寶石名稱、等級、品質、是否啟用、插槽位置
+    """
+    skills = []
+    skills_elem = root.find("Skills")
+    
+    if not skills_elem:
+        return skills
+    
+    for skill_set in skills_elem.findall("SkillSet"):
+        for skill in skill_set.findall("Skill"):
+            enabled = skill.get("enabled", "true") == "true"
+            
+            skill_data = {
+                "label": skill.get("label", "Unknown"),
+                "enabled": enabled,
+                "slot": skill.get("slot", ""),
+                "main_active_skill": skill.get("mainActiveSkill"),
+                "gems": []
+            }
+            
+            # 提取所有寶石資訊
+            for gem in skill.findall("Gem"):
+                gem_name = gem.get("nameSpec", "Unknown")
+                
+                gem_data = {
+                    "name": gem_name,
+                    "level": int(gem.get("level", 1)),
+                    "quality": int(gem.get("quality", 0)),
+                    "enabled": gem.get("enabled", "true") == "true",
+                    "is_support": is_support_gem(gem_name),
+                    "is_awakened": "Awakened" in gem_name,
+                    "quality_type": gem.get("qualityId", "Default")
+                }
+                
+                skill_data["gems"].append(gem_data)
+            
+            # 只保留啟用且有寶石的技能組
+            if enabled and skill_data["gems"]:
+                skills.append(skill_data)
+    
+    logger.info(f"📊 找到 {len(skills)} 個技能配置")
+    return skills
+
+
+def extract_equipment_configuration(root: ET.Element) -> Dict[str, Dict]:
+    """
+    提取裝備配置（詞綴資訊）
+    不計算數值，只提取詞綴文字
+    """
+    equipment = {}
+    items_elem = root.find("Items")
+    
+    if not items_elem:
+        return equipment
+    
+    slot_mapping = {
+        "Weapon 1": "mainhand",
+        "Weapon 2": "offhand",
+        "Helmet": "helmet",
+        "Body Armour": "body",
+        "Gloves": "gloves",
+        "Boots": "boots",
+        "Amulet": "amulet",
+        "Ring 1": "ring1",
+        "Ring 2": "ring2",
+        "Belt": "belt",
+        "Flask 1": "flask1",
+        "Flask 2": "flask2",
+        "Flask 3": "flask3",
+        "Flask 4": "flask4",
+        "Flask 5": "flask5"
+    }
+    
+    for item_set in items_elem.findall("ItemSet"):
+        for slot_name, slot_key in slot_mapping.items():
+            slot_elem = item_set.find(f"Slot[@name='{slot_name}']")
+            
+            if slot_elem is not None:
+                item_elem = slot_elem.find("Item")
+                
+                if item_elem is not None:
+                    equipment[slot_key] = parse_item_details(item_elem)
+    
+    logger.info(f"🎒 找到 {len(equipment)} 件裝備")
+    return equipment
+
+
+def parse_item_details(item_elem: ET.Element) -> Dict[str, Any]:
+    """解析單件裝備的詳細資訊"""
+    item_text = item_elem.text if item_elem.text else ""
+    
+    # 解析基本資訊
+    item_data = {
+        "name": item_elem.get("name", ""),
+        "rarity": item_elem.get("rarity", "NORMAL"),
+        "item_level": int(item_elem.get("itemLevel", 0)),
+        "type_line": "",
+        "implicit_mods": [],
+        "explicit_mods": [],
+        "crafted_mods": [],
+        "fractured_mods": [],
+        "sockets": []
+    }
+    
+    # 解析詞綴（從物品文字中提取）
+    if item_text:
+        lines = item_text.strip().split('\n')
+        current_section = None
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # 識別不同類型的詞綴
+            if "Rarity:" in line:
+                continue
+            elif "{crafted}" in line:
+                item_data["crafted_mods"].append(line.replace("{crafted}", "").strip())
+            elif "{fractured}" in line:
+                item_data["fractured_mods"].append(line.replace("{fractured}", "").strip())
+            else:
+                # 根據位置判斷是固有詞綴還是明文詞綴
+                if not item_data["implicit_mods"] and "--------" not in line:
+                    item_data["implicit_mods"].append(line)
+                elif "--------" not in line:
+                    item_data["explicit_mods"].append(line)
+    
+    # 解析插槽
+    sockets = item_elem.get("sockets", "")
+    if sockets:
+        item_data["sockets"] = parse_sockets(sockets)
+    
+    return item_data
+
+
+def parse_sockets(socket_string: str) -> List[Dict[str, str]]:
+    """解析插槽配置"""
+    sockets = []
+    
+    if not socket_string:
+        return sockets
+    
+    # 格式: "R-R-R G-G-G" (連結用 - 分隔，組別用空格分隔)
+    groups = socket_string.split(' ')
+    
+    for group in groups:
+        colors = group.split('-')
+        for color in colors:
+            sockets.append({
+                "color": color,
+                "group": groups.index(group)
+            })
+    
+    return sockets
+
+
+def extract_passive_tree(root: ET.Element) -> Dict[str, Any]:
+    """提取天賦樹配置"""
+    tree_elem = root.find("Tree")
+    
+    if not tree_elem:
+        logger.warning("⚠️ 找不到 Tree 元素")
+        return {"nodes": [], "total": 0, "url": ""}
+    
+    spec_elem = tree_elem.find("Spec")
+    
+    if not spec_elem:
+        logger.warning("⚠️ 找不到 Spec 元素")
+        return {"nodes": [], "total": 0, "url": ""}
+    
+    # 🔧 方法 1: 從 Node 標籤提取節點
+    allocated_nodes = []
+    for node_elem in spec_elem.findall("Node"):
+        node_id = node_elem.get("nodeId")
+        if node_id:
+            try:
+                allocated_nodes.append(int(node_id))
+            except ValueError:
+                continue
+    
+    # 🔧 方法 2: 如果方法 1 失敗，嘗試從 URL 提取
+    url_elem = spec_elem.find("URL")
+    url = url_elem.text if url_elem is not None and url_elem.text else ""
+    
+    if not allocated_nodes and url:
+        logger.info("🔍 嘗試從 URL 提取天賦樹節點...")
+        # URL 格式: https://www.pathofexile.com/passive-skill-tree/AAAABgIBAG...
+        # Base64 編碼的天賦樹資料在 URL 最後
+        try:
+            # 簡單提取：PoB URL 通常很長，說明有天賦樹資料
+            # 但解析需要額外邏輯，這裡先標記為有天賦樹
+            if len(url) > 100:
+                logger.info(f"✅ 天賦樹資料存在於 URL 中（長度: {len(url)}）")
+                # 返回 URL，前端可以顯示提示
+                return {
+                    "nodes": [],
+                    "total": 0,
+                    "url": url,
+                    "class_start": spec_elem.get("classId", "0"),
+                    "note": "天賦樹資料存在於 URL 中，請在 PoB 查看"
+                }
+        except Exception as e:
+            logger.warning(f"⚠️ URL 解析失敗: {str(e)}")
+    
+    # 🔧 方法 3: 檢查是否有 treeVersion 屬性（表示有天賦樹）
+    tree_version = spec_elem.get("treeVersion")
+    if tree_version and not allocated_nodes:
+        logger.info(f"✅ 檢測到天賦樹版本: {tree_version}，但節點資料在 URL 中")
+        return {
+            "nodes": [],
+            "total": 0,
+            "url": url,
+            "class_start": spec_elem.get("classId", "0"),
+            "tree_version": tree_version,
+            "note": "天賦樹資料存在，請在 PoB 查看詳細節點"
+        }
+    
+    logger.info(f"🌲 天賦樹: {len(allocated_nodes)} 個節點")
+    
+    return {
+        "nodes": allocated_nodes,
+        "total": len(allocated_nodes),
+        "url": url,
+        "class_start": spec_elem.get("classId", "0")
+    }
+
+
+def extract_config_options(root: ET.Element) -> Dict[str, str]:
+    """提取配置選項（如 Flasks、Charges 等）"""
+    config = {}
+    config_elem = root.find("Config")
+    
+    if not config_elem:
+        return config
+    
+    for input_elem in config_elem.findall("Input"):
+        name = input_elem.get("name", "")
+        value = input_elem.text
+        
+        if name and value:
+            config[name] = value
+    
+    return config
+
+
+def is_support_gem(gem_name: str) -> bool:
+    """判斷是否為輔助寶石"""
+    support_keywords = [
+        "Support", "support",
+        "Awakened", "awakened",
+        "Damage on Full Life",
+        "Elemental Damage with Attacks",
+        "Added Cold", "Added Fire", "Added Lightning",
+        "Increased Critical", "Increased Duration",
+        "Hypothermia", "Inspiration",
+        "Vicious Projectiles", "Multistrike",
+        "Melee Physical", "Fortify",
+        "Concentrated Effect", "Increased Area",
+        "Trinity", "Brutality",
+        "Faster Attacks", "Faster Casting",
+        "Spell Echo", "Greater Multiple Projectiles",
+        "Lesser Multiple Projectiles"
+    ]
+    
+    return any(keyword in gem_name for keyword in support_keywords)
+
+
+def identify_main_skill(skills: List[Dict]) -> Dict[str, Any]:
+    """識別主技能組"""
+    # 尋找啟用且連結數最多的技能組
+    main_skill = None
+    max_links = 0
+    
+    for skill in skills:
+        if not skill["enabled"]:
+            continue
+        
+        link_count = len(skill["gems"])
+        
+        # 優先選擇 6L
+        if link_count >= 5 and link_count > max_links:
+            # 確認有主動技能寶石
+            has_active = any(not gem["is_support"] for gem in skill["gems"])
+            if has_active:
+                main_skill = skill
+                max_links = link_count
+    
+    return main_skill or (skills[0] if skills else None)
+
+
+# ============== 配置比對函數 ==============
+
+def compare_skill_configurations(player_skills: List[Dict], target_skills: List[Dict]) -> Dict[str, Any]:
+    """
+    比對技能配置差異
+    100% 準確，因為只比對配置，不計算數值
+    """
+    # 識別主技能
+    player_main = identify_main_skill(player_skills)
+    target_main = identify_main_skill(target_skills)
+    
+    if not player_main or not target_main:
+        return {"differences": [], "main_skill_match": False}
+    
+    differences = []
+    
+    # 比對主技能寶石
+    player_active = [g for g in player_main["gems"] if not g["is_support"]]
+    target_active = [g for g in target_main["gems"] if not g["is_support"]]
+    
+    if player_active and target_active:
+        if player_active[0]["name"] != target_active[0]["name"]:
+            differences.append({
+                "type": "different_main_skill",
+                "priority": "critical",
+                "player": player_active[0]["name"],
+                "target": target_active[0]["name"],
+                "message": f"主技能不同：{player_active[0]['name']} vs {target_active[0]['name']}"
+            })
+    
+    # 比對寶石等級
+    if player_active and target_active:
+        level_diff = target_active[0]["level"] - player_active[0]["level"]
+        if level_diff > 0:
+            differences.append({
+                "type": "gem_level",
+                "priority": "high",
+                "gem": player_active[0]["name"],
+                "current": player_active[0]["level"],
+                "target": target_active[0]["level"],
+                "message": f"主技能等級需提升 {level_diff} 級 (Lv{player_active[0]['level']} → Lv{target_active[0]['level']})"
+            })
+    
+    # 比對寶石品質
+    if player_active and target_active:
+        quality_diff = target_active[0]["quality"] - player_active[0]["quality"]
+        if quality_diff > 0:
+            differences.append({
+                "type": "gem_quality",
+                "priority": "medium",
+                "gem": player_active[0]["name"],
+                "current": player_active[0]["quality"],
+                "target": target_active[0]["quality"],
+                "message": f"主技能品質需提升 {quality_diff}% ({player_active[0]['quality']}% → {target_active[0]['quality']}%)"
+            })
+    
+    # 比對輔助寶石
+    player_supports = {g["name"]: g for g in player_main["gems"] if g["is_support"]}
+    target_supports = {g["name"]: g for g in target_main["gems"] if g["is_support"]}
+    
+    # 缺少的輔助寶石
+    missing_supports = set(target_supports.keys()) - set(player_supports.keys())
+    for support_name in missing_supports:
+        target_gem = target_supports[support_name]
+        differences.append({
+            "type": "missing_support",
+            "priority": "high" if target_gem["is_awakened"] else "medium",
+            "gem": support_name,
+            "target_level": target_gem["level"],
+            "is_awakened": target_gem["is_awakened"],
+            "message": f"缺少輔助寶石：{support_name} (Lv{target_gem['level']})"
+        })
+    
+    # 輔助寶石等級差異
+    for support_name in set(player_supports.keys()) & set(target_supports.keys()):
+        player_gem = player_supports[support_name]
+        target_gem = target_supports[support_name]
+        
+        level_diff = target_gem["level"] - player_gem["level"]
+        if level_diff > 0:
+            differences.append({
+                "type": "support_level",
+                "priority": "medium",
+                "gem": support_name,
+                "current": player_gem["level"],
+                "target": target_gem["level"],
+                "message": f"{support_name} 需升級 {level_diff} 級"
+            })
+    
+    # 比對連結數
+    player_links = len(player_main["gems"])
+    target_links = len(target_main["gems"])
+    
+    if player_links < target_links:
+        differences.append({
+            "type": "insufficient_links",
+            "priority": "critical",
+            "current": player_links,
+            "target": target_links,
+            "message": f"連結數不足：{player_links}L → 需要 {target_links}L"
+        })
+    
+    return {
+        "differences": differences,
+        "main_skill_match": player_active[0]["name"] == target_active[0]["name"] if player_active and target_active else False,
+        "player_main_skill": player_main,
+        "target_main_skill": target_main
+    }
+
+
+def compare_passive_trees(player_nodes: List[int], target_nodes: List[int]) -> Dict[str, Any]:
+    """
+    比對天賦樹配置
+    100% 準確
+    """
+    player_set = set(player_nodes)
+    target_set = set(target_nodes)
+    
+    missing_nodes = list(target_set - player_set)
+    extra_nodes = list(player_set - target_set)
+    common_nodes = list(player_set & target_set)
+    
+    match_rate = (len(common_nodes) / len(target_set) * 100) if target_set else 100
+    
+    return {
+        "missing_nodes": missing_nodes,
+        "missing_count": len(missing_nodes),
+        "extra_nodes": extra_nodes,
+        "extra_count": len(extra_nodes),
+        "common_nodes": common_nodes,
+        "match_rate": round(match_rate, 1),
+        "points_needed": len(missing_nodes)
+    }
+
+
+def compare_equipment(player_eq: Dict, target_eq: Dict) -> List[Dict]:
+    """
+    比對裝備配置（詞綴層面）
+    提供裝備改進建議
+    """
+    suggestions = []
+    
+    for slot in ["mainhand", "offhand", "helmet", "body", "gloves", "boots", "amulet", "ring1", "ring2", "belt"]:
+        player_item = player_eq.get(slot)
+        target_item = target_eq.get(slot)
+        
+        if not target_item:
+            continue
+        
+        if not player_item:
+            suggestions.append({
+                "slot": slot,
+                "type": "missing_item",
+                "priority": "high",
+                "message": f"{slot} 位置缺少裝備"
+            })
+            continue
+        
+        # 比對稀有度
+        if player_item["rarity"] != target_item["rarity"]:
+            suggestions.append({
+                "slot": slot,
+                "type": "rarity_mismatch",
+                "priority": "medium",
+                "player_rarity": player_item["rarity"],
+                "target_rarity": target_item["rarity"],
+                "message": f"{slot}: {player_item['rarity']} → 需要 {target_item['rarity']}"
+            })
+        
+        # 比對關鍵詞綴（簡化版）
+        target_mod_keywords = extract_mod_keywords(target_item["explicit_mods"])
+        player_mod_keywords = extract_mod_keywords(player_item["explicit_mods"])
+        
+        missing_keywords = target_mod_keywords - player_mod_keywords
+        
+        if missing_keywords:
+            suggestions.append({
+                "slot": slot,
+                "type": "missing_mods",
+                "priority": "medium",
+                "missing_keywords": list(missing_keywords),
+                "message": f"{slot} 缺少關鍵詞綴：{', '.join(missing_keywords)}"
+            })
+    
+    return suggestions
+
+
+def extract_mod_keywords(mods: List[str]) -> set:
+    """從詞綴中提取關鍵字"""
+    keywords = set()
+    
+    important_keywords = [
+        "Life", "Energy Shield", "Mana",
+        "+# to Level of", "+# to Level of all",
+        "Increased Damage", "Critical Strike",
+        "Attack Speed", "Cast Speed",
+        "Resistance", "Elemental Resistance",
+        "Chaos Resistance",
+        "Added Physical Damage", "Added Cold Damage",
+        "Added Fire Damage", "Added Lightning Damage"
+    ]
+    
+    for mod in mods:
+        for keyword in important_keywords:
+            if keyword.lower() in mod.lower():
+                keywords.add(keyword)
+    
+    return keywords
