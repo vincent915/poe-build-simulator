@@ -22,6 +22,9 @@ export const useBuildStore = defineStore('build', {
     playerLevel: (state) => state.playerBuild?.stats?.level || 0,
     targetLevel: (state) => state.targetBuild?.stats?.level || 0,
 
+    playerEquipmentGemMap: (state) => state.playerBuild?.equipmentGemMap || {},
+    targetEquipmentGemMap: (state) => state.targetBuild?.equipmentGemMap || {},
+
     overallSimilarity: (state) => {
       return state.comparisonResult?.data?.overall_similarity?.overall || 0
     }

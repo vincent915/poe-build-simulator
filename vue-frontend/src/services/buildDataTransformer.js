@@ -1,5 +1,19 @@
 // PoB 資料轉換器 - 將 FastAPI 的 PoB 解析結果轉換為前端標準格式
 
+// PoB slot 名稱 → 前端 equipment key 映射
+const POB_SLOT_TO_EQUIPMENT_KEY = {
+    'Weapon 1': 'weapon_main_hand',
+    'Weapon 2': 'weapon_off_hand',
+    'Helmet': 'helmet',
+    'Body Armour': 'body_armour',
+    'Gloves': 'gloves',
+    'Boots': 'boots',
+    'Amulet': 'amulet',
+    'Ring 1': 'ring_1',
+    'Ring 2': 'ring_2',
+    'Belt': 'belt',
+}
+
 export default class BuildDataTransformer {
 
     /**
@@ -41,8 +55,34 @@ export default class BuildDataTransformer {
                 allocated_nodes: passiveAllocation.allocated_nodes || [],
                 total_points: passiveAllocation.total_points_used || 0
             },
+            equipmentGemMap: this.buildEquipmentGemMap(skillSetup),
             source: 'pob_import'
         }
+    }
+
+    /**
+     * 建立裝備部位 → 寶石組映射
+     * 回傳格式：{ equipment_key: [ skillGroup, ... ] }
+     */
+    static buildEquipmentGemMap(skillSetup) {
+        const map = {}
+        const groups = skillSetup?.skill_groups || []
+
+        for (const group of groups) {
+            const slot = group.slot
+            if (!slot) continue
+
+            const equipKey = POB_SLOT_TO_EQUIPMENT_KEY[slot]
+            if (!equipKey) continue
+
+            const transformed = this.transformSkillGroup(group)
+            if (!map[equipKey]) {
+                map[equipKey] = []
+            }
+            map[equipKey].push(transformed)
+        }
+
+        return map
     }
 
     /**

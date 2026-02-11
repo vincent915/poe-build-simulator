@@ -121,7 +121,7 @@
                             </div>
 
                             <CharacterStatsCard :build="playerBuild" color="blue" />
-                            <EquipmentGrid :equipment="playerBuild.equipment || {}" title="Equipment" />
+                            <EquipmentGrid :equipment="playerBuild.equipment || {}" :gem-map="playerBuild.equipmentGemMap || {}" title="Equipment" />
                             <SkillSetup :skills="playerBuild.skills || {}" title="Skills" />
                         </div>
 
@@ -133,7 +133,7 @@
                             </div>
 
                             <CharacterStatsCard :build="targetBuild" color="purple" />
-                            <EquipmentGrid :equipment="targetBuild.equipment || {}" title="Equipment" />
+                            <EquipmentGrid :equipment="targetBuild.equipment || {}" :gem-map="targetBuild.equipmentGemMap || {}" title="Equipment" />
                             <SkillSetup :skills="targetBuild.skills || {}" title="Skills" />
                         </div>
                     </div>
