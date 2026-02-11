@@ -36,3 +36,6 @@ coverage
 __screenshots__/
 
 .env.local
+
+# Backup files
+*backup*
