@@ -11,6 +11,7 @@ Path of Exile 雙流派配置比對工具 - 比較兩個 Path of Building (PoB) 
 - 依優先級顯示差異（緊急 → 高 → 中 → 低）
 - **按裝備部位分組展示寶石差異**（連結數、主技能、等級/品質）
 - **裝備卡片顯示鑲嵌寶石**，支援展開/收合檢視
+- **Unique 裝備顯示 poe.ninja 圖示**（localStorage 24h 快取）
 - 提供具體的 PoB 操作步驟建議
 - 整合 RePoE 資料驗證寶石分類（支援 457 個輔助寶石名稱變體）
 
@@ -20,7 +21,7 @@ Path of Exile 雙流派配置比對工具 - 比較兩個 Path of Building (PoB) 
 |------|------|
 | 前端 | Vue 3 + Vite + Pinia + Tailwind CSS + Axios |
 | 後端 | FastAPI (Python) |
-| 資料來源 | RePoE (遊戲資料 JSON) |
+| 資料來源 | RePoE (遊戲資料 JSON)、poe.ninja (裝備圖示) |
 
 ## 快速開始
 
@@ -77,9 +78,11 @@ API 文件：http://localhost:8000/docs
 
 ### 第三階段：視覺化增強 ⏳ 進行中
 - ✅ 裝備卡片顯示鑲嵌寶石，支援展開/收合檢視
-- 整合 poe.ninja API 取得裝備圖示
-- 優化比對結果呈現方式
-- 新增載入狀態與錯誤提示
+- ✅ 整合 poe.ninja API 取得 Unique 裝備圖示
+- ✅ 修正後端裝備 XML 解析（itemId 查詢 + 文字解析名稱/稀有度）
+- ✅ 裝備名稱完整顯示（換行 / 截斷 + hover tooltip）
+- ⏳ 優化比對結果呈現方式
+- ⏳ 新增載入狀態與錯誤提示
 
 ### 第四階段：功能擴充（規劃中）
 - 天賦樹路徑最佳化建議
@@ -118,11 +121,13 @@ poe-build-simulator/
         └── services/
             ├── api.js            # API 呼叫函數
             ├── pobApi.js         # PoB 解析 API
+            ├── poeNinjaService.js # poe.ninja 裝備圖示查詢
             └── buildDataTransformer.js # 資料轉換
 ```
 
 ## 版本歷史
 
+- **v2.4.0** (2026-02): 整合 poe.ninja Unique 裝備圖示、修正裝備 XML 解析、裝備名稱排版優化
 - **v2.3.0** (2026-02): 裝備卡片顯示鑲嵌寶石，支援展開/收合檢視
 - **v2.2.0** (2026-02): 完成第二階段 - 按裝備部位展示寶石差異；清理備份檔案與未使用的範本
 - **v2.1.0** (2025-01): 整合 RePoE 寶石資料，修正輔助寶石識別
