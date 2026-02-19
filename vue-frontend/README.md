@@ -1,44 +1,29 @@
-# vue-frontend
+# POE Build Simulator - Vue 前端
 
-This template should help get you started developing with Vue 3 in Vite.
+此目錄為 POE Build Simulator 的 Vue 3 前端。
 
-## Recommended IDE Setup
+完整專案說明請參閱根目錄 [README.md](../README.md)。
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+## 快速開始
 
-## Recommended Browser Setup
-
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd) 
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
-
-```sh
+```bash
 npm install
+npm run dev      # 開發伺服器 localhost:5173
+npm run build    # 正式環境建置
+npm run lint     # ESLint 檢查
 ```
 
-### Compile and Hot-Reload for Development
+需同時啟動後端服務：
 
-```sh
-npm run dev
+```bash
+cd ../fastapi-service
+uvicorn app.main:app --reload --port 8000
 ```
 
-### Compile and Minify for Production
+## 環境變數
 
-```sh
-npm run build
+建立 `.env.local`：
+
 ```
-
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
-npm run lint
+VITE_FASTAPI_URL=http://127.0.0.1:8000
 ```
