@@ -15,11 +15,36 @@
 
       <!-- Equipped -->
       <div v-else class="w-full space-y-1">
-        <div :class="['font-medium text-sm', rarityText]">
-          {{ item.name || item.base_type }}
-        </div>
-        <div v-if="item.name && item.base_type" class="text-xs text-gray-400">
-          {{ item.base_type }}
+        <!-- 圖示 + 名稱列 -->
+        <div class="flex items-start gap-2">
+          <!-- 裝備圖示 -->
+          <div class="flex-shrink-0 w-10 h-10 flex items-center justify-center">
+            <img
+              v-if="iconUrl"
+              :src="iconUrl"
+              :alt="item.name || item.base_type"
+              class="w-10 h-10 object-contain"
+              @error="handleIconError"
+            />
+            <span v-else class="text-xl opacity-50">{{ emptyIcon }}</span>
+          </div>
+
+          <!-- 名稱與基底 -->
+          <div class="flex-1 min-w-0">
+            <div
+              :class="['font-medium text-sm leading-tight', rarityText, compact ? 'truncate' : 'break-words']"
+              :title="item.name || item.base_type"
+            >
+              {{ item.name || item.base_type }}
+            </div>
+            <div
+              v-if="item.name && item.base_type"
+              :class="['text-xs text-gray-400', compact ? 'truncate' : 'break-words']"
+              :title="item.base_type"
+            >
+              {{ item.base_type }}
+            </div>
+          </div>
         </div>
 
         <!-- Sockets -->
@@ -72,9 +97,10 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import SocketDisplay from './SocketDisplay.vue'
 import GemCard from './GemCard.vue'
+import poeNinjaService from '../services/poeNinjaService'
 
 const props = defineProps({
   item: { type: Object, default: null },
@@ -86,6 +112,12 @@ const props = defineProps({
 })
 
 const expanded = ref(false)
+const iconError = ref(false)
+
+onMounted(() => {
+  // 觸發圖示載入（若尚未載入）
+  poeNinjaService.ensureLoaded()
+})
 
 const hasEquipment = computed(() => {
   return props.item?.has_data === true
@@ -98,6 +130,17 @@ const hasGems = computed(() => {
 const totalGemCount = computed(() => {
   return props.gemGroups.reduce((sum, g) => sum + (g.all_gems?.length || 0), 0)
 })
+
+// 圖示 URL：從 poeNinjaService 響應式查詢（只對 UNIQUE 有效）
+const iconUrl = computed(() => {
+  if (!props.item?.name || iconError.value) return null
+  if (!poeNinjaService.state.loaded) return null
+  return poeNinjaService.getIconUrl(props.item.name)
+})
+
+function handleIconError() {
+  iconError.value = true
+}
 
 const rarityText = computed(() => {
   const colors = {

@@ -377,13 +377,21 @@ class PobXmlMapper:
     def _extract_equipment_snapshot(self, root: ET.Element) -> EquipmentSnapshot:
         """提取裝備快照"""
         items_elem = root.find("Items")
-        
+
         if not items_elem:
             logger.warning("找不到 Items 節點，返回空裝備配置")
             return EquipmentSnapshot()
-        
+
+        # PoB XML 結構：<Item id="N"> 與 <ItemSet> 是兄弟節點
+        # <Slot> 用 itemId 屬性引用 <Item>，不是嵌套關係
+        item_map = {}
+        for item_elem in items_elem.findall("Item"):
+            item_id = item_elem.get("id", "")
+            if item_id:
+                item_map[item_id] = item_elem
+
         equipment = {}
-        
+
         # 裝備部位映射
         slot_mapping = {
             "Weapon 1": "weapon_main_hand",
@@ -402,47 +410,108 @@ class PobXmlMapper:
             "Flask 4": "flask_4",
             "Flask 5": "flask_5"
         }
-        
+
+        # 使用 activeItemSet 指定的 ItemSet，預設第一個
+        active_set_id = items_elem.get("activeItemSet", "1")
+        target_item_set = None
         for item_set in items_elem.findall("ItemSet"):
-            for slot_name, attr_name in slot_mapping.items():
-                slot_elem = item_set.find(f"Slot[@name='{slot_name}']")
-                
-                if slot_elem is not None:
-                    item_elem = slot_elem.find("Item")
-                    
-                    if item_elem is not None:
-                        equipment[attr_name] = self._extract_equipment_item(
-                            item_elem,
-                            slot_name
-                        )
-        
+            if item_set.get("id", "") == active_set_id:
+                target_item_set = item_set
+                break
+        if target_item_set is None:
+            target_item_set = items_elem.find("ItemSet")
+        if target_item_set is None:
+            return EquipmentSnapshot()
+
+        for slot_name, attr_name in slot_mapping.items():
+            slot_elem = target_item_set.find(f"Slot[@name='{slot_name}']")
+            if slot_elem is not None:
+                item_id = slot_elem.get("itemId", "")
+                if item_id and item_id in item_map:
+                    equipment[attr_name] = self._extract_equipment_item(
+                        item_map[item_id],
+                        slot_name
+                    )
+
         return EquipmentSnapshot(**equipment)
-    
+
     def _extract_equipment_item(
         self,
         item_elem: ET.Element,
         slot: str
     ) -> EquipmentItem:
-        """提取單件裝備資訊"""
-        # 基礎屬性
-        name = item_elem.get("name", "")
-        rarity_str = item_elem.get("rarity", "NORMAL")
-        item_level = int(item_elem.get("itemLevel", 0))
-        
-        # 解析稀有度
-        rarity = ItemRarity[rarity_str] if rarity_str in ItemRarity.__members__ else ItemRarity.NORMAL
-        
-        # 解析物品文字（包含詞綴）
+        """提取單件裝備資訊（從 PoB 物品文字解析，非 XML 屬性）"""
         item_text = item_elem.text if item_elem.text else ""
-        
-        # 這裡需要更複雜的解析邏輯來提取詞綴
-        # 暫時返回基礎資料
+        name, rarity, item_level = self._parse_item_text_header(item_text)
+        base_type = self._extract_base_type(item_text, name, rarity)
+
         return EquipmentItem(
             slot=slot,
             name=name,
+            base_type=base_type,
             rarity=rarity,
             item_level=item_level
         )
+
+    def _parse_item_text_header(self, item_text: str):
+        """從 PoB 物品文字解析名稱、稀有度、物品等級"""
+        lines = [ln.strip() for ln in item_text.strip().splitlines() if ln.strip()]
+        rarity = ItemRarity.NORMAL
+        item_level = 0
+
+        for line in lines:
+            if line.lower().startswith("rarity:"):
+                rarity_str = line.split(":", 1)[1].strip().upper()
+                rarity = ItemRarity[rarity_str] if rarity_str in ItemRarity.__members__ else ItemRarity.NORMAL
+            elif line.lower().startswith("item level:"):
+                try:
+                    item_level = int(line.split(":", 1)[1].strip())
+                except (ValueError, IndexError):
+                    pass
+
+        # 名稱 = 過濾 "Rarity:" 後的第一行
+        filtered = [ln for ln in lines if not ln.lower().startswith("rarity:")]
+        name = filtered[0] if filtered else ""
+
+        return name, rarity, item_level
+
+    def _extract_base_type(self, item_text: str, name: str, rarity: "ItemRarity") -> str:
+        """
+        從 PoB 物品文字中解析基底類型。
+
+        PoB item text 格式（clipboard copy 格式）：
+          UNIQUE/RARE: 第一行=物品唯一名稱，第二行=基底類型
+          NORMAL/MAGIC: 第一行=基底類型（名稱即基底）
+
+        由於 name 已從 XML 屬性取得，文字第一行通常是 name 本身或基底類型。
+        """
+        if not item_text:
+            return ""
+
+        lines = [ln.strip() for ln in item_text.strip().splitlines() if ln.strip()]
+        if not lines:
+            return ""
+
+        # 過濾掉 "Rarity: ..." 開頭的行
+        filtered = [ln for ln in lines if not ln.lower().startswith("rarity:")]
+        if not filtered:
+            return ""
+
+        is_named = rarity in (ItemRarity.UNIQUE, ItemRarity.RARE)
+
+        if is_named and name:
+            # UNIQUE/RARE：第一行是物品名（與 name 屬性相同），第二行是基底類型
+            if filtered[0] == name and len(filtered) > 1:
+                return filtered[1]
+            # 若第一行不是 name，嘗試找 name 後的行
+            for i, ln in enumerate(filtered):
+                if ln == name and i + 1 < len(filtered):
+                    return filtered[i + 1]
+            # 找不到對應則回傳第一行
+            return filtered[0]
+        else:
+            # NORMAL/MAGIC：第一行即基底類型
+            return filtered[0]
 
 
 # 導出便捷函數
